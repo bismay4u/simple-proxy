@@ -6,21 +6,21 @@
 
 function authMiddleware(config) {
     return function(req, res, next) {
-        if (!req.path().startsWith('/api')) {
+        if (!req.path.startsWith('/api')) {
             return next();
         }
 
         if (!config.admin_token) {
-            res.send(503, { error: 'Admin API disabled: ADMIN_TOKEN is not configured' });
-            return next(false);
+            res.status(503).json({ error: 'Admin API disabled: ADMIN_TOKEN is not configured' });
+            return;
         }
 
         const header = req.headers['authorization'] || '';
         const [scheme, token] = header.split(' ');
 
         if (scheme !== 'Bearer' || token !== config.admin_token) {
-            res.send(401, { error: 'Unauthorized' });
-            return next(false);
+            res.status(401).json({ error: 'Unauthorized' });
+            return;
         }
 
         return next();
@@ -28,63 +28,57 @@ function authMiddleware(config) {
 }
 
 function mountRoutes(server, state, restartSocks5) {
-    server.get('/api/routes', (req, res, next) => {
-        res.send(200, state.data.routes);
-        return next();
+    server.get('/api/routes', (req, res) => {
+        res.json(state.data.routes);
     });
 
-    server.get('/api/routes/:key', (req, res, next) => {
+    server.get('/api/routes/:key', (req, res) => {
         const route = state.data.routes[req.params.key];
-        if (!route) return notFound(res, next);
-        res.send(200, route);
-        return next();
+        if (!route) return notFound(res);
+        res.json(route);
     });
 
-    server.post('/api/routes', (req, res, next) => {
+    server.post('/api/routes', (req, res) => {
         const body = req.body || {};
         const key = body.key;
         const url = body.url;
 
-        if (!key || !url) return badRequest(res, next, 'key and url are required');
-        if (state.data.routes[key]) return conflict(res, next, `Route '${key}' already exists`);
+        if (!key || !url) return badRequest(res, 'key and url are required');
+        if (state.data.routes[key]) return conflict(res, `Route '${key}' already exists`);
 
         state.data.routes[key] = { url, headers: body.headers || {} };
         state.save();
-        res.send(201, state.data.routes[key]);
-        return next();
+        res.status(201).json(state.data.routes[key]);
     });
 
-    server.put('/api/routes/:key', (req, res, next) => {
+    server.put('/api/routes/:key', (req, res) => {
         const key = req.params.key;
-        if (!state.data.routes[key]) return notFound(res, next);
+        if (!state.data.routes[key]) return notFound(res);
 
         const body = req.body || {};
-        if (!body.url) return badRequest(res, next, 'url is required');
+        if (!body.url) return badRequest(res, 'url is required');
 
         state.data.routes[key] = { url: body.url, headers: body.headers || {} };
         state.save();
-        res.send(200, state.data.routes[key]);
-        return next();
+        res.json(state.data.routes[key]);
     });
 
-    server.del('/api/routes/:key', (req, res, next) => {
+    server.delete('/api/routes/:key', (req, res) => {
         const key = req.params.key;
-        if (!state.data.routes[key]) return notFound(res, next);
+        if (!state.data.routes[key]) return notFound(res);
 
         delete state.data.routes[key];
         state.save();
-        res.send(204);
-        return next();
+        res.status(204).end();
     });
 
-    server.get('/api/settings', (req, res, next) => {
-        res.send(200, redactSettings(state.data.settings));
-        return next();
+    server.get('/api/settings', (req, res) => {
+        res.json(redactSettings(state.data.settings));
     });
 
     // Only cors_sites and socks5 take effect live; throttle is fixed at
-    // server startup by restify's plugin so it isn't exposed for writes here.
-    server.patch('/api/settings', (req, res, next) => {
+    // server startup by express-rate-limit so it isn't exposed for writes here.
+    server.patch('/api/settings', (req, res) => {
         const body = req.body || {};
 
         if (body.cors_sites != null) {
@@ -99,24 +93,20 @@ function mountRoutes(server, state, restartSocks5) {
         }
 
         state.save();
-        res.send(200, redactSettings(state.data.settings));
-        return next();
+        res.json(redactSettings(state.data.settings));
     });
 }
 
-function notFound(res, next) {
-    res.send(404, { error: 'Not found' });
-    return next();
+function notFound(res) {
+    res.status(404).json({ error: 'Not found' });
 }
 
-function badRequest(res, next, message) {
-    res.send(400, { error: message });
-    return next();
+function badRequest(res, message) {
+    res.status(400).json({ error: message });
 }
 
-function conflict(res, next, message) {
-    res.send(409, { error: message });
-    return next();
+function conflict(res, message) {
+    res.status(409).json({ error: message });
 }
 
 function redactSettings(settings) {

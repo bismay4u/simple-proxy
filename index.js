@@ -1,10 +1,10 @@
 /*
  * Simple Proxy Server
  * Proxy Server for redirecting data from request to another server for sake of security and used during server side whitelisting
- * 
- * Use https://github.com/request/request 
+ *
+ * Use https://github.com/request/request
  * For Proxy Configuration, each object in proxy.js can have fields that can be picked from above URL options
- * 
+ *
  * @author : Bismay <bismay@smartinfologiks.com>
  * */
 
@@ -17,13 +17,12 @@ const adminApi = require('./admin');
 /**
  * Loading all plugin packages required
  */
-const restify = require('restify');
-const restifyPlugins = require('restify-plugins');
-const errors = require('restify-errors');
+const express = require('express');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
 
 const request = require('request');
 const urlParser = require('url');
-const fs = require('fs');
 const bunyan = require('bunyan');
 const _ = require('lodash');
 
@@ -41,14 +40,8 @@ const logger = bunyan.createLogger({
 /**
  * Initialize Server
  */
-const server = restify.createServer({
-    name: config.name,
-    version: config.version,
+const server = express();
 
-    dtrace: false,
-    log: logger,
-    ignoreTrailingSlash: true
-});
 /**
  * Runtime-mutable, persisted gateway state (proxy routes + settings),
  * seeded from proxy.js / config.js and managed at runtime via the admin API.
@@ -66,33 +59,44 @@ config.socks5 = state.data.settings.socks5;
 server.config = config;
 server.proxyConfig = state.data.routes;
 
-/**
- * Preeware
-*/
-server.pre(restify.plugins.pre.context());
-server.pre(restify.plugins.pre.dedupeSlashes());
-server.pre(restify.plugins.pre.sanitizePath());
+// Express ignores trailing slashes by default (non-strict routing), matching
+// the old ignoreTrailingSlash:true restify option, so no extra config is needed.
 
 /**
  * Middleware
 */
-server.use(restify.plugins.urlEncodedBodyParser());
-server.use(restify.plugins.queryParser({ mapParams: true }));//req.query
-server.use(restify.plugins.acceptParser( server.acceptable ));
-server.use(restify.plugins.dateParser());
-server.use(restify.plugins.fullResponse());
-server.use(restify.plugins.gzipResponse());
-server.use(restify.plugins.throttle( config.throttle ));
+server.use((req, res, next) => {
+    // Collapse repeated slashes in the path, leaving the query string alone.
+    const [pathname, search] = req.url.split('?');
+    const deduped = pathname.replace(/\/{2,}/g, '/');
+    req.url = search ? `${deduped}?${search}` : deduped;
+    return next();
+});
 
-server.use(restify.plugins.bodyParser({ mapParams: false }));
+server.use(express.urlencoded({ extended: true }));
+server.use(express.json());
+server.use(express.text({ type: 'application/xml' }));
+
+server.use(compression());
+
+server.use(rateLimit({
+    windowMs: (config.throttle.burst / config.throttle.rate) * 1000,
+    max: config.throttle.burst,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => {
+        const override = config.throttle.overrides && config.throttle.overrides[req.ip];
+        return !!(override && override.rate === 0);
+    }
+}));
 
 server.use(function(req, res, next) {
     // console.log("XXXXX", req.headers.origin);
     res.header('Access-Control-Allow-Origin', config.cors_sites);//req.headers.origin
 
     if(req.method.toUpperCase()=="OPTIONS") {
-        var allowHeaders = ['Accept', 'Accept-Version', 'Content-Type', 
-            'Api-Version', 'Origin', 'X-Requested-With', 
+        var allowHeaders = ['Accept', 'Accept-Version', 'Content-Type',
+            'Api-Version', 'Origin', 'X-Requested-With',
             'x-data-hash', 'authorization', 'auth-token'];
 
         res.header('Access-Control-Allow-Credentials', true);
@@ -102,8 +106,8 @@ server.use(function(req, res, next) {
         // res.header("Access-Control-Allow-Origin", "*");
         // res.header("Access-Control-Allow-Methods", req.header("Access-Control-Request-Method"));
         // res.header("Access-Control-Allow-Headers", req.header("Access-Control-Request-Headers"));
-        
-        return res.send(204);
+
+        return res.status(204).end();
     }
     return next();
 });
@@ -112,8 +116,7 @@ server.use(adminApi.authMiddleware(server.config));
 
 //Landing Page
 server.get('/', (req, res, next) => {
-    res.sendRaw('Welcome to '+server.config.name);
-    return next();
+    res.send('Welcome to '+server.config.name);
 })
 
 /**
@@ -124,35 +127,35 @@ adminApi.mountRoutes(server, state, restartSocks5);
 
 //With ProxyKEY
 server.get('/:proxykey', (req, res, next) => {
-    processProxyRequest("GET",req.path(),req, res, next);
+    processProxyRequest("GET",req.path,req, res, next);
 });
 
 server.post('/:proxykey', (req, res, next) => {
-    processProxyRequest("POST",req.path(),req, res, next);
+    processProxyRequest("POST",req.path,req, res, next);
 });
 
 server.put('/:proxykey', (req, res, next) => {
-    processProxyRequest("PUT",req.path(),req, res, next);
+    processProxyRequest("PUT",req.path,req, res, next);
 });
 
-server.del('/:proxykey', (req, res, next) => {
-    processProxyRequest("DELETE",req.path(),req, res, next);
+server.delete('/:proxykey', (req, res, next) => {
+    processProxyRequest("DELETE",req.path,req, res, next);
 });
 
 server.get('/:proxykey/*', (req, res, next) => {
-    processProxyRequest("GET",req.path(),req, res, next);
+    processProxyRequest("GET",req.path,req, res, next);
 });
 
 server.post('/:proxykey/*', (req, res, next) => {
-    processProxyRequest("POST",req.path(),req, res, next);
+    processProxyRequest("POST",req.path,req, res, next);
 });
 
 server.put('/:proxykey/*', (req, res, next) => {
-    processProxyRequest("PUT",req.path(),req, res, next);
+    processProxyRequest("PUT",req.path,req, res, next);
 });
 
-server.del('/:proxykey/*', (req, res, next) => {
-    processProxyRequest("DELETE",req.path(),req, res, next);
+server.delete('/:proxykey/*', (req, res, next) => {
+    processProxyRequest("DELETE",req.path,req, res, next);
 });
 
 /**
@@ -180,12 +183,12 @@ function processProxyRequest(type, path, req, res, next) {
     proxyKEY = req.params.proxykey;
 
     if(server.proxyConfig[proxyKEY]==null) {
-        res.sendRaw(404, "Not Found");
-        return next();
+        res.status(404).send("Not Found");
+        return;
     }
 
     if(req.query.debug != null && req.query.debug=="true") {
-        res.send({
+        res.json({
             "proxykey":proxyKEY,
             "type":type,
             "path":path,
@@ -194,7 +197,7 @@ function processProxyRequest(type, path, req, res, next) {
             "body":req.body,
             "headers":req.headers,
         });
-        return next();
+        return;
     }
 
     proxyInfo = server.proxyConfig[proxyKEY];
@@ -230,8 +233,8 @@ function processProxyRequest(type, path, req, res, next) {
                 switch(contentType) {
                     case "multipart":
                         console.log(req.headers['content-type']);
-                        res.sendRaw(502, `${req.headers['content-type']} Not supported`);
-                        return next();
+                        res.status(502).send(`${req.headers['content-type']} Not supported`);
+                        return;
                     break;
                     case "application/x-www-form-urlencoded":
                         postData = [];
@@ -247,43 +250,43 @@ function processProxyRequest(type, path, req, res, next) {
                         optsFinal.body = req.body;
                     break;
                     default:
-                        res.sendRaw(502, `${req.headers['content-type']} Not supported`);
-                        return next();
+                        res.status(502).send(`${req.headers['content-type']} Not supported`);
+                        return;
                 }
             } else {
-                res.sendRaw(502, `${req.headers['content-type']} Not supported`);
-                return next();
+                res.status(502).send(`${req.headers['content-type']} Not supported`);
+                return;
             }
         break;
         case "HEAD":
-            res.sendRaw(405, `HEAD Request Not supported`);
-            return next();
+            res.status(405).send(`HEAD Request Not supported`);
+            return;
         break;
         case "OPTIONS":
-            res.sendRaw(405, `OPTIONS Request Not supported`);
-            return next();
+            res.status(405).send(`OPTIONS Request Not supported`);
+            return;
         break;
     }
 
-    // res.send([optsFinal]);
-    // return next();
+    // res.json([optsFinal]);
+    // return;
 
     request(optsFinal, function(error, response, body) {
         if (error) {
             // console.error('request failed:', error);
-            res.sendRaw(500, "Request Failed");
-            return next();
+            res.status(500).send("Request Failed");
+            return;
         }
         // console.log(response.statusCode) // 200
         // console.log(response.headers['content-type']); // 'image/png'
         // console.log('Response:', body);
 
-        if(optsFinal.use_response_headers) {
-            res.sendRaw(response.statusCode, body, response.headers);
-        } else {
-            res.sendRaw(response.statusCode, body);
+        if(response.headers['content-type']) {
+            res.set('content-type', response.headers['content-type']);
         }
-
-        return next();
+        if(optsFinal.use_response_headers) {
+            res.set(response.headers);
+        }
+        res.status(response.statusCode).send(body);
     });
 }
