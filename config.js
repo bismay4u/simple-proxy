@@ -41,5 +41,6 @@ module.exports = {
 			username: process.env.SOCKS5_USER,
 			password: process.env.SOCKS5_PASS
 		} : null
-	}
+	},
+	admin_token: process.env.ADMIN_TOKEN || null
 };

@@ -18,6 +18,29 @@ Configure it via env vars (see [config.js](config.js)):
 + `SOCKS5_PORT` — listen port (default: `1080`)
 + `SOCKS5_USER` / `SOCKS5_PASS` — set both to require username/password auth (default: no auth)
 
+# Admin API
+A `/api` route lets you manage the gateway at runtime — add/edit/remove proxy routes and update select settings — without restarting the server. It's disabled (503) unless `ADMIN_TOKEN` is set, and every request must send `Authorization: Bearer <ADMIN_TOKEN>`. Changes are persisted to `state.json` (gitignored) so they survive restarts, and `proxy.js` / `config.js` are only used to seed that file on first boot.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/routes` | List all proxy routes |
+| GET | `/api/routes/:key` | Get one route |
+| POST | `/api/routes` | Create a route — body: `{ "key", "url", "headers" }` |
+| PUT | `/api/routes/:key` | Replace a route's `url`/`headers` |
+| DELETE | `/api/routes/:key` | Remove a route |
+| GET | `/api/settings` | View current gateway settings |
+| PATCH | `/api/settings` | Update `cors_sites` and/or `socks5` (restarts the SOCKS5 listener if changed) |
+
+Example:
+```
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -X POST http://localhost:9010/api/routes \
+  -H "Content-Type: application/json" \
+  -d '{"key":"test","url":"https://test.com","headers":{"Authorization":"Bearer test"}}'
+```
+
+Note: `throttle` (rate limiting) is fixed at server startup by restify's plugin and isn't editable through this API — changing it still requires a restart.
+
 # Features In Plan:
 + Logging
 + Statistics

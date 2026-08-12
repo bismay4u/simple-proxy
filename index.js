@@ -9,8 +9,10 @@
  * */
 
 const config = require('./config');
-const proxyConfig = require('./proxy');
+const defaultProxyConfig = require('./proxy');
 const startSocks5Server = require('./socks5');
+const createState = require('./state');
+const adminApi = require('./admin');
 
 /**
  * Loading all plugin packages required
@@ -47,8 +49,22 @@ const server = restify.createServer({
     log: logger,
     ignoreTrailingSlash: true
 });
+/**
+ * Runtime-mutable, persisted gateway state (proxy routes + settings),
+ * seeded from proxy.js / config.js and managed at runtime via the admin API.
+ */
+const state = createState({
+    routes: defaultProxyConfig,
+    settings: {
+        cors_sites: config.cors_sites,
+        socks5: config.socks5
+    }
+});
+config.cors_sites = state.data.settings.cors_sites;
+config.socks5 = state.data.settings.socks5;
+
 server.config = config;
-server.proxyConfig = proxyConfig;
+server.proxyConfig = state.data.routes;
 
 /**
  * Preeware
@@ -90,13 +106,21 @@ server.use(function(req, res, next) {
         return res.send(204);
     }
     return next();
-}); 
+});
+
+server.use(adminApi.authMiddleware(server.config));
 
 //Landing Page
 server.get('/', (req, res, next) => {
     res.sendRaw('Welcome to '+server.config.name);
     return next();
 })
+
+/**
+ * Admin API - manage gateway routes & settings at runtime.
+ * See admin.js. Registered before the /:proxykey catch-all routes.
+ */
+adminApi.mountRoutes(server, state, restartSocks5);
 
 //With ProxyKEY
 server.get('/:proxykey', (req, res, next) => {
@@ -140,6 +164,17 @@ server.listen(config.port, () => {
 
 server.socks5 = startSocks5Server(config, logger);
 
+function restartSocks5() {
+    if (server.socks5) {
+        const old = server.socks5;
+        server.socks5 = null;
+        old.close(() => {
+            server.socks5 = startSocks5Server(server.config, logger);
+        });
+    } else {
+        server.socks5 = startSocks5Server(server.config, logger);
+    }
+}
 
 function processProxyRequest(type, path, req, res, next) {
     proxyKEY = req.params.proxykey;
