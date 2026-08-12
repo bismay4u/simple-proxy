@@ -30,7 +30,7 @@
     "express-rate-limit": "^7.4.0",
     "lodash": "^4.17.11",
     "moment": "^2.22.2",
-    "request": "^2.88.0",
+    "undici": "^7.29.0",
     "url": "^0.11.0"
   }
 }

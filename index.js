@@ -2,7 +2,7 @@
  * Simple Proxy Server
  * Proxy Server for redirecting data from request to another server for sake of security and used during server side whitelisting
  *
- * Use https://github.com/request/request
+ * Use https://github.com/nodejs/undici
  * For Proxy Configuration, each object in proxy.js can have fields that can be picked from above URL options
  *
  * @author : Bismay <bismay@smartinfologiks.com>
@@ -21,7 +21,8 @@ const express = require('express');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 
-const request = require('request');
+const { request: undiciRequest, Agent, interceptors } = require('undici');
+const zlib = require('zlib');
 const urlParser = require('url');
 const bunyan = require('bunyan');
 const _ = require('lodash');
@@ -36,6 +37,9 @@ const logger = bunyan.createLogger({
         path: './logs/error.log' // log ERROR and above to a file
     }]
 });
+
+// Follows redirects like the old `request` library did by default (undici doesn't, on its own).
+const upstreamDispatcher = new Agent().compose(interceptors.redirect({ maxRedirections: 10 }));
 
 /**
  * Initialize Server
@@ -179,7 +183,7 @@ function restartSocks5() {
     }
 }
 
-function processProxyRequest(type, path, req, res, next) {
+async function processProxyRequest(type, path, req, res, next) {
     proxyKEY = req.params.proxykey;
 
     if(server.proxyConfig[proxyKEY]==null) {
@@ -218,6 +222,16 @@ function processProxyRequest(type, path, req, res, next) {
     optsFinal.method = type.toUpperCase();
     optsFinal.headers = _.extend(req.headers, optsFinal.headers);
     optsFinal.headers.host = urlHOST;
+    // These describe the inbound request; the body we're about to send upstream
+    // is freshly (re)built below, so stale values here would either be wrong
+    // (content-length) or misleading (transfer-encoding, already fully buffered).
+    delete optsFinal.headers['content-length'];
+    delete optsFinal.headers['transfer-encoding'];
+    if (optsFinal.gzip && !optsFinal.headers['accept-encoding']) {
+        optsFinal.headers['accept-encoding'] = 'gzip, deflate, br';
+    }
+
+    let requestBody;
 
     switch(type.toUpperCase()) {
         case "GET":
@@ -241,13 +255,13 @@ function processProxyRequest(type, path, req, res, next) {
                         _.each(req.body, function(a ,b) {
                             postData.push(b+"="+encodeURIComponent(a));
                         });
-                        optsFinal.body = postData.join("&");
+                        requestBody = postData.join("&");
                     break;
                     case "application/json":
-                        optsFinal.json = JSON.stringify(req.body);
+                        requestBody = JSON.stringify(req.body);
                     break;
                     case "application/xml":
-                        optsFinal.body = req.body;
+                        requestBody = req.body;
                     break;
                     default:
                         res.status(502).send(`${req.headers['content-type']} Not supported`);
@@ -271,22 +285,42 @@ function processProxyRequest(type, path, req, res, next) {
     // res.json([optsFinal]);
     // return;
 
-    request(optsFinal, function(error, response, body) {
-        if (error) {
-            // console.error('request failed:', error);
-            res.status(500).send("Request Failed");
-            return;
-        }
-        // console.log(response.statusCode) // 200
-        // console.log(response.headers['content-type']); // 'image/png'
-        // console.log('Response:', body);
+    let response;
+    let body;
+    try {
+        response = await undiciRequest(optsFinal.url, {
+            dispatcher: upstreamDispatcher,
+            method: optsFinal.method,
+            headers: optsFinal.headers,
+            body: requestBody,
+            headersTimeout: optsFinal.timeout,
+            bodyTimeout: optsFinal.timeout
+        });
+        body = Buffer.from(await response.body.arrayBuffer());
+    } catch (error) {
+        // console.error('request failed:', error);
+        res.status(500).send("Request Failed");
+        return;
+    }
 
-        if(response.headers['content-type']) {
-            res.set('content-type', response.headers['content-type']);
-        }
-        if(optsFinal.use_response_headers) {
-            res.set(response.headers);
-        }
-        res.status(response.statusCode).send(body);
-    });
+    const encoding = (response.headers['content-encoding'] || '').toLowerCase();
+    try {
+        if (encoding === 'gzip') body = zlib.gunzipSync(body);
+        else if (encoding === 'deflate') body = zlib.inflateSync(body);
+        else if (encoding === 'br') body = zlib.brotliDecompressSync(body);
+    } catch (error) {
+        // content-encoding lied or the body was truncated - fall through with the raw bytes
+    }
+
+    if(response.headers['content-type']) {
+        res.set('content-type', response.headers['content-type']);
+    }
+    if(optsFinal.use_response_headers) {
+        const headers = Object.assign({}, response.headers);
+        delete headers['content-length']; // stale once the body above may have been decompressed
+        delete headers['content-encoding'];
+        delete headers['transfer-encoding'];
+        res.set(headers);
+    }
+    res.status(response.statusCode).send(body);
 }
