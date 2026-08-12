@@ -1,6 +1,6 @@
 module.exports = {
   apps : [{
-    name: 'SProxy',
+    name: 'Simple Proxy',
     script: 'index.js',
     instances : 'max',
     cron_restart: '10 03 * * *',

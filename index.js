@@ -1,5 +1,5 @@
 /*
- * SProxy Server
+ * Simple Proxy Server
  * Proxy Server for redirecting data from request to another server for sake of security and used during server side whitelisting
  * 
  * Use https://github.com/request/request 
@@ -10,6 +10,7 @@
 
 const config = require('./config');
 const proxyConfig = require('./proxy');
+const startSocks5Server = require('./socks5');
 
 /**
  * Loading all plugin packages required
@@ -136,6 +137,8 @@ server.del('/:proxykey/*', (req, res, next) => {
 server.listen(config.port, () => {
     console.log(`${server.config.name} is listening on port ${config.port}`);
 });
+
+server.socks5 = startSocks5Server(config, logger);
 
 
 function processProxyRequest(type, path, req, res, next) {

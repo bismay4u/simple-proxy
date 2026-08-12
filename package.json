@@ -1,6 +1,6 @@
 {
-  "name": "sproxy",
-  "title": "SProxy Server",
+  "name": "simple-proxy",
+  "title": "Simple Proxy Server",
   "version": "1.0.0",
   "description": "Proxy Server for redirecting data from request to another server for sake of security and used during server side whitelisting",
   "main": "index.js",

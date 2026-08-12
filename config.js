@@ -33,5 +33,13 @@ module.exports = {
         timeout: 1500,
         gzip: true,
         use_response_headers: false
-    }
+    },
+	socks5: {
+		enabled: process.env.SOCKS5_ENABLED !== 'false',
+		port: process.env.SOCKS5_PORT || 1080,
+		auth: (process.env.SOCKS5_USER && process.env.SOCKS5_PASS) ? {
+			username: process.env.SOCKS5_USER,
+			password: process.env.SOCKS5_PASS
+		} : null
+	}
 };
